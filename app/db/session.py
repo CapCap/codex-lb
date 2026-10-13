@@ -188,6 +188,7 @@ def _create_postgres_async_engine(url: str, *, role: _PostgresPooledEngineRole) 
 
 
 def _sqlite_file_async_engine_kwargs() -> dict[str, object]:
+    """Use unpooled file connections that finalize retained cursors during teardown."""
     return {
         "poolclass": NullPool,
         "connect_args": {"timeout": _SQLITE_BUSY_TIMEOUT_SECONDS, "factory": FinalizingSQLiteConnection},

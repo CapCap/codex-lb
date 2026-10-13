@@ -52,6 +52,8 @@ A cancellation during a write with RETURNING can leave its unfinished sqlite3 cu
 
 File-backed main and background engines use a connection factory that weakly tracks SQLAlchemy-created cursors and explicitly closes them before raw connection close. Cleanup stays on aiosqlite's worker thread. Weak tracking avoids retaining otherwise dead cursors. Memory SQLite and PostgreSQL engine configuration are unchanged. Raising busy_timeout or pinning either tested SQLAlchemy version alone cannot release this stranded statement.
 
+An ordinary cursor-close exception does not stop cleanup of the remaining cursors. Teardown attempts every cursor and the base connection close, then propagates the first cleanup exception. A cursor whose native finalization itself fails cannot be assumed released; the remaining cursors still get their cleanup opportunity.
+
 For example, a terminal transcript write can hit its persistence deadline while an INSERT RETURNING is executing. After cancellation unwinds and teardown completes, fenced settlement and scheduler lease writes can proceed even while the cancellation traceback remains referenced. A worker still actively blocked is subject to the existing teardown/interruption bounds; cursor finalization takes effect when the queued close runs.
 
 The fix needs no migration or new setting. Restart with the patched build to replace existing connections, then verify real bridge writes and leader renewals; a healthy HTTP endpoint alone does not demonstrate recovery. See the [cleanup requirement](spec.md#requirement-cancelled-sqlite-writes-release-statement-locks-during-connection-teardown).

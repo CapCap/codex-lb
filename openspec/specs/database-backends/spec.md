@@ -933,6 +933,13 @@ File-backed SQLite main and background connections MUST release locks held by un
 - **THEN** an independent connection can write without waiting for garbage collection
 - **AND** the cancelled transaction remains uncommitted
 
+#### Scenario: One cursor fails during connection cleanup
+
+- **WHEN** closing one cursor raises an ordinary exception during connection teardown
+- **THEN** cleanup MUST still attempt to close every remaining cursor and the connection
+- **AND** the first cleanup exception MUST propagate after those attempts
+- **AND** successfully finalized statements MUST NOT retain the writer lock
+
 #### Scenario: Terminal transcript persistence times out
 
 - **WHEN** a bridge terminal transcript write exceeds its persistence deadline and is cancelled

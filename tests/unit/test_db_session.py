@@ -289,6 +289,7 @@ def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> N
 
 
 def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatch) -> None:
+    """File SQLite uses cursor-finalizing connections without pooled-backend settings."""
     monkeypatch.setattr(
         session_module,
         "_settings",

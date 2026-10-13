@@ -18,7 +18,47 @@ from app.db.sqlite_connection import FinalizingSQLiteConnection
 pytestmark = pytest.mark.unit
 
 
+def test_connection_closes_remaining_cursors_after_close_errors(tmp_path: Path) -> None:
+    """A failing close must not strand later RETURNING statements or hide the first error."""
+    path = tmp_path / "close-errors.db"
+    first_error = sqlite3.OperationalError("first cursor close failure")
+    second_error = sqlite3.OperationalError("second cursor close failure")
+    close_calls: list[sqlite3.Cursor] = []
+
+    class ErrorAfterCloseCursor(sqlite3.Cursor):
+        def close(self) -> None:
+            """Inject failures after native finalization, independent of WeakSet iteration order."""
+            super().close()
+            close_calls.append(self)
+            if len(close_calls) == 1:
+                raise first_error
+            if len(close_calls) == 2:
+                raise second_error
+
+    connection = sqlite3.connect(path, factory=FinalizingSQLiteConnection)
+    connection.execute("CREATE TABLE diagnostic (value INTEGER)")
+    cursors = [connection.cursor(ErrorAfterCloseCursor) for _ in range(3)]
+    for cursor in cursors:
+        cursor.execute("INSERT INTO diagnostic VALUES (1) RETURNING value")
+    try:
+        with pytest.raises(sqlite3.OperationalError) as raised:
+            connection.close()
+        assert raised.value is first_error
+        with closing(sqlite3.connect(path, timeout=0.2)) as independent, independent:
+            independent.execute("INSERT INTO diagnostic VALUES (2)")
+            assert independent.execute("SELECT value FROM diagnostic").fetchall() == [(2,)]
+        assert len(close_calls) == len(cursors)
+        assert set(close_calls) == set(cursors)
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+        connection.close()
+        assert len(close_calls) == len(cursors)
+    finally:
+        connection.close()
+
+
 def test_connection_finalizes_retained_cursors_and_preserves_transactions(tmp_path: Path) -> None:
+    """Connection teardown rolls back unfinished writes without retaining dead cursors."""
     path = tmp_path / "transactions.db"
     connection = sqlite3.connect(path, factory=FinalizingSQLiteConnection)
     connection.execute("CREATE TABLE diagnostic (value INTEGER)")
@@ -49,6 +89,7 @@ def test_connection_finalizes_retained_cursors_and_preserves_transactions(tmp_pa
 async def test_cancelled_returning_write_releases_lock_with_retained_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine_role: str
 ) -> None:
+    """Both file-backed engine roles release cancelled writes before traceback collection."""
     path = tmp_path / "cancelled.db"
     url = f"sqlite+aiosqlite:///{path}"
     if engine_role == "main":
@@ -63,18 +104,21 @@ async def test_cancelled_returning_write_releases_lock_with_retained_traceback(
     release = threading.Event()
 
     def pause_write() -> int:
+        """Hold SQLite execution until the test has requested cancellation."""
         entered.set()
         assert release.wait(5)
         return 1
 
     @event.listens_for(engine.sync_engine, "connect")
     def register_pause(connection, _record) -> None:
+        """Install the cancellation barrier on each real database connection."""
         connection.create_function("pause_write", 0, pause_write)
 
     session = async_sessionmaker(engine)()
     retained_errors: list[BaseException] = []
 
     async def write() -> None:
+        """Keep the cancellation traceback alive after the write task finishes."""
         try:
             await session.execute(text("INSERT INTO diagnostic VALUES (pause_write()) RETURNING value"))
         except asyncio.CancelledError as exc:

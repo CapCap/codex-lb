@@ -17,7 +17,7 @@ Increasing busy_timeout cannot release a stranded statement. Pinning SQLAlchemy 
 ## Risks / Trade-offs
 
 - Retained cursor already closed: sqlite3 cursor close is idempotent; test repeated close.
-- Unexpected cursor close failure: ensure base connection close still runs and errors propagate.
+- Unexpected cursor close failure: attempt all remaining cursors and base connection close before propagating the first cleanup error; test that later unfinished statements release the writer lock.
 - Tests accidentally collect the offending traceback: retain cancellation exceptions explicitly until after a second independent writer succeeds; prove regression fails without the factory.
 - A worker still executing a statement: this patch finalizes it when queued close executes; existing interruption and teardown bounds remain responsible for actively stuck workers.
 

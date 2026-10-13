@@ -24,6 +24,7 @@ pytestmark = pytest.mark.integration
 async def test_terminal_timeout_releases_writer_for_bridge_and_leader(
     tmp_path: Path, monkeypatch, spool_format
 ) -> None:
+    """A real transcript timeout releases SQLite writes and preserves settlement fences."""
     path = tmp_path / "bridge.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}", **_sqlite_file_async_engine_kwargs())
     _configure_sqlite_engine(engine.sync_engine, enable_wal=True)
@@ -33,21 +34,25 @@ async def test_terminal_timeout_releases_writer_for_bridge_and_leader(
     returning_inserts: list[str] = []
 
     def pause_write() -> int:
+        """Keep the transcript INSERT executing until its persistence deadline expires."""
         entered.set()
         assert release.wait(5)
         return 1
 
     @event.listens_for(engine.sync_engine, "connect")
     def register_pause(connection, _record) -> None:
+        """Register the trigger's blocking function on each SQLite connection."""
         connection.create_function("pause_write", 0, pause_write)
 
     @event.listens_for(engine.sync_engine, "before_cursor_execute")
     def record_returning(_connection, _cursor, statement, _parameters, _context, _executemany) -> None:
+        """Verify the regression exercises the driver's unfinished RETURNING path."""
         if statement.startswith("INSERT INTO http_bridge_operation_event") and "RETURNING" in statement:
             returning_inserts.append(statement)
 
     class RetainingSession(AsyncSession):
         async def commit(self) -> None:
+            """Retain cancellation frames independently of the batcher's task ownership."""
             try:
                 await super().commit()
             except asyncio.CancelledError as exc:
@@ -62,6 +67,7 @@ async def test_terminal_timeout_releases_writer_for_bridge_and_leader(
 
     @asynccontextmanager
     async def background_session():
+        """Run leader writes against the same file with independently owned sessions."""
         session = sessions()
         try:
             yield session
